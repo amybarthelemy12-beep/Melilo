@@ -10,6 +10,7 @@ import argparse
 from datetime import datetime, timezone
 
 from melilo.config import settings
+from melilo.ingest.extract import extract
 from melilo.ingest.r2_client import fetch_source, write_pairs_jsonl
 from melilo.translate.pipeline import chunk_text, translate_chunks
 
@@ -43,7 +44,7 @@ def main() -> None:
     args = parser.parse_args()
 
     doc = fetch_source(args.source_key)
-    text = doc.body.decode("utf-8", errors="replace")
+    text = extract(doc.key, doc.body)
     chunks = list(chunk_text(source_uri=f"r2://{settings.r2_source_bucket}/{doc.key}", text=text))
 
     translator = _load_translator()
