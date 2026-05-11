@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "melilo"
+version = "0.0.1"
+description = "Apache 2.0 LLM that translates legal text into plain English, fine-tuned from OLMo."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    "boto3>=1.34",          # R2 is S3-compatible
+    "python-dotenv>=1.0",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "transformers>=4.46",
+    "torch>=2.3",
+    "accelerate>=0.34",
+    "datasets>=2.20",
+    "trl>=0.11",            # SFTTrainer for student fine-tuning
+    "peft>=0.13",           # LoRA, optional but cheap to keep available
+    "tqdm>=4.66",
+    "pypdfium2>=4.30",      # PDF text extraction
+    "selectolax>=0.3",      # fast HTML parser
+]
+
+[project.optional-dependencies]
+inference = [
+    "vllm>=0.6",            # faster batch inference for the translator
+]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+melilo-ingest = "scripts.ingest:main"
+melilo-translate = "scripts.translate:main"
+melilo-train = "scripts.train:main"
+
+[tool.setuptools.packages.find]
+include = ["melilo*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
