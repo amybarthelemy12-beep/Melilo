@@ -67,8 +67,8 @@ class Settings(BaseSettings):
     # `openai`   : hit any OpenAI-compatible HTTP API. Works with local Ollama,
     #              Parasail, OpenRouter, vLLM-served endpoints, etc. Swap providers
     #              by changing OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL.
-    backend: str = Field(default="hf", alias="MELILO_BACKEND")
-    backend_concurrency: int = Field(default=4, alias="MELILO_BACKEND_CONCURRENCY")
+    backend: str = Field(default="openai", alias="MELILO_BACKEND")
+    backend_concurrency: int = Field(default=2, alias="MELILO_BACKEND_CONCURRENCY")
     backend_max_tokens: int = Field(default=2048, alias="MELILO_BACKEND_MAX_TOKENS")
     backend_temperature: float = Field(default=0.0, alias="MELILO_BACKEND_TEMPERATURE")
 
