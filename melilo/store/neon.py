@@ -22,6 +22,7 @@ from melilo.config import settings
 
 
 SCHEMA_DDL = """
+-- 1. Base table (no-op if it already exists).
 CREATE TABLE IF NOT EXISTS pairs (
     id                TEXT        PRIMARY KEY,
     task_type         TEXT        NOT NULL,
@@ -35,14 +36,22 @@ CREATE TABLE IF NOT EXISTS pairs (
     translator_model  TEXT        NOT NULL,
     prompt_version    TEXT        NOT NULL,
     created_at        TIMESTAMPTZ NOT NULL,
-    -- Training & review metadata (nullable; filled in post-hoc).
     training_set      TEXT,
     human_reviewed    BOOLEAN     NOT NULL DEFAULT FALSE,
-    review_notes      TEXT
+    review_notes      TEXT,
+    license           TEXT,                  -- 'PD' | 'CC0' | 'CC-BY-4.0' | etc.
+    attribution       TEXT,                  -- REQUIRED when license starts with 'CC-BY'
+    source_org        TEXT                   -- 'LegiScan' | 'Congress.gov' | etc.
 );
 
--- One pair per (task, origin). COALESCE on section_id so NULL collapses to ''
--- for the constraint (Postgres NULLs would otherwise allow duplicates).
+-- 2. Idempotent column adds — run BEFORE any index uses these columns so
+-- existing-deployment migrations succeed in one transaction.
+ALTER TABLE pairs ADD COLUMN IF NOT EXISTS license     TEXT;
+ALTER TABLE pairs ADD COLUMN IF NOT EXISTS attribution TEXT;
+ALTER TABLE pairs ADD COLUMN IF NOT EXISTS source_org  TEXT;
+
+-- 3. Indexes. COALESCE on section_id so NULL collapses to '' for the unique
+-- constraint (Postgres NULLs would otherwise allow duplicates).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_pairs_origin
     ON pairs (task_type, source_bucket, source_key, COALESCE(section_id, ''));
 
@@ -50,7 +59,42 @@ CREATE INDEX IF NOT EXISTS ix_pairs_task_source     ON pairs (task_type, source_
 CREATE INDEX IF NOT EXISTS ix_pairs_source_key      ON pairs (source_key);
 CREATE INDEX IF NOT EXISTS ix_pairs_prompt_version  ON pairs (prompt_version);
 CREATE INDEX IF NOT EXISTS ix_pairs_training_set    ON pairs (training_set);
+CREATE INDEX IF NOT EXISTS ix_pairs_license         ON pairs (license);
+CREATE INDEX IF NOT EXISTS ix_pairs_source_org      ON pairs (source_org);
 """
+
+
+# Licenses approved by govparti's policy (see melilo-licensing memory).
+# Anything else must be rejected before we burn translator tokens on it.
+APPROVED_LICENSES: set[str] = {
+    "PD",            # public domain (17 USC § 105, court opinions, state statutes)
+    "CC0",
+    "CC-BY-4.0",
+    "CC-BY-3.0",
+    "CC-BY-2.0",
+    "CC-BY-1.0",
+}
+
+
+def validate_license(license_: str | None, attribution: str | None) -> None:
+    """Enforce govparti's license policy at the point pairs would be written.
+    Raises ValueError if the (license, attribution) pair is unacceptable."""
+    if not license_:
+        raise ValueError(
+            "license is required for every backfill run. Pass --license "
+            f"with one of: {sorted(APPROVED_LICENSES)}. See melilo-licensing memo."
+        )
+    if license_ not in APPROVED_LICENSES:
+        raise ValueError(
+            f"license {license_!r} is not on the approved list "
+            f"({sorted(APPROVED_LICENSES)}). NC/SA/ND/aggregator licenses are "
+            "dealkillers per govparti policy."
+        )
+    if license_.startswith("CC-BY") and not attribution:
+        raise ValueError(
+            f"license {license_!r} requires --attribution to be set. CC BY "
+            "demands attribution wherever the data renders."
+        )
 
 
 @contextmanager
@@ -74,21 +118,24 @@ def bootstrap_schema() -> None:
         conn.commit()
 
 
+_PAIR_COLS = (
+    "id", "task_type", "source_type", "source_bucket", "source_key",
+    "source_uri", "section_id", "source_text", "translation",
+    "translator_model", "prompt_version", "created_at",
+    "license", "attribution", "source_org",
+)
+
+
 def upsert_pair(record: dict) -> bool:
     """Insert a pair record. Returns True if a new row was written, False if a
     row for the same (task, source_bucket, source_key, section_id) already
     existed. The `id` PK collision case is also handled (same content -> same id)."""
-    cols = (
-        "id", "task_type", "source_type", "source_bucket", "source_key",
-        "source_uri", "section_id", "source_text", "translation",
-        "translator_model", "prompt_version", "created_at",
-    )
-    placeholders = ", ".join(["%s"] * len(cols))
+    placeholders = ", ".join(["%s"] * len(_PAIR_COLS))
     sql = (
-        f"INSERT INTO pairs ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"INSERT INTO pairs ({', '.join(_PAIR_COLS)}) VALUES ({placeholders}) "
         "ON CONFLICT DO NOTHING RETURNING id"
     )
-    values = tuple(record.get(c) for c in cols)
+    values = tuple(record.get(c) for c in _PAIR_COLS)
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(sql, values)
         inserted = cur.fetchone() is not None
@@ -100,18 +147,13 @@ def upsert_pairs(records: Sequence[dict]) -> int:
     """Batched insert. Returns the number of newly-inserted rows."""
     if not records:
         return 0
-    cols = (
-        "id", "task_type", "source_type", "source_bucket", "source_key",
-        "source_uri", "section_id", "source_text", "translation",
-        "translator_model", "prompt_version", "created_at",
-    )
-    placeholders = ", ".join(["%s"] * len(cols))
+    placeholders = ", ".join(["%s"] * len(_PAIR_COLS))
     sql = (
-        f"INSERT INTO pairs ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"INSERT INTO pairs ({', '.join(_PAIR_COLS)}) VALUES ({placeholders}) "
         "ON CONFLICT DO NOTHING"
     )
     with _connect() as conn, conn.cursor() as cur:
-        rows = [tuple(r.get(c) for c in cols) for r in records]
+        rows = [tuple(r.get(c) for c in _PAIR_COLS) for r in records]
         cur.executemany(sql, rows)
         inserted = cur.rowcount  # psycopg sums executemany rowcounts
         conn.commit()

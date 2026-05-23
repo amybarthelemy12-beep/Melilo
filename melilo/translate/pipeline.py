@@ -132,6 +132,9 @@ def _record(
     source_type: SourceType,
     source_bucket: str,
     source_key: str,
+    license: str | None,
+    attribution: str | None,
+    source_org: str | None,
 ) -> dict:
     return {
         "id": hashlib.sha256(
@@ -149,6 +152,9 @@ def _record(
         "translator_model": settings.translator_model,
         "prompt_version": settings.prompt_version,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "license": license,
+        "attribution": attribution,
+        "source_org": source_org,
     }
 
 
@@ -167,12 +173,19 @@ def translate_document(
     source_type: SourceType,
     source_bucket: str,
     source_key: str,
+    license: str | None = None,
+    attribution: str | None = None,
+    source_org: str | None = None,
 ) -> Iterator[dict]:
     """Top-level entry: take one document, produce one or more pair records for the
     given task. `translator` is any callable taking messages -> str.
 
     `source_bucket` is the logical role ("public" or "internal"). `source_key` is
     the R2 object key. Together they uniquely identify the source within govparti.
+
+    `license`, `attribution`, `source_org` propagate into each pair record so
+    downstream consumers can honor attribution and the deny-list. Validated
+    upstream by the CLI driver — see `melilo.store.validate_license`.
     """
     validate_task_source(task_type, source_type)
     for unit in _units_for_task(text, task_type):
@@ -185,4 +198,7 @@ def translate_document(
             source_type=source_type,
             source_bucket=source_bucket,
             source_key=source_key,
+            license=license,
+            attribution=attribution,
+            source_org=source_org,
         )

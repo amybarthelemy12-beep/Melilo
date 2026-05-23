@@ -61,8 +61,8 @@ def write_pairs_jsonl(key: str, records: Iterable[dict]) -> None:
     """Write JSONL pair records to the Melilo bucket. One PUT per call."""
     if not settings.r2_melilo_bucket:
         raise RuntimeError(
-            "R2_MELILO_ENDPOINT is not set in .env — set it to the bucket name "
-            "where Melilo pairs should be written."
+            "R2_MELILO_BUCKET is not set in .env — set it to the bucket name "
+            "where Melilo pairs should be written (default: melilo-pairs)."
         )
     s3 = _client()
     body = "\n".join(json.dumps(r, ensure_ascii=False) for r in records).encode("utf-8")
@@ -77,7 +77,7 @@ def write_pairs_jsonl(key: str, records: Iterable[dict]) -> None:
 def list_pair_keys(prefix: str = "") -> Iterator[str]:
     """List keys in the Melilo (pairs) bucket. Used by backfill for skip-if-exists."""
     if not settings.r2_melilo_bucket:
-        raise RuntimeError("R2_MELILO_ENDPOINT is not set in .env")
+        raise RuntimeError("R2_MELILO_BUCKET is not set in .env")
     s3 = _client()
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=settings.r2_melilo_bucket, Prefix=prefix):

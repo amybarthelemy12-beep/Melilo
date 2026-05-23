@@ -1,6 +1,8 @@
 """Run the translator over a single R2 source key. Pair record goes to BOTH
 R2 (immutable archive) and Neon (query layer), same as the batch backfill.
 
+Backend is chosen by `MELILO_BACKEND` in .env (see scripts/backfill.py).
+
 Usage:
     melilo-translate --bucket public --source-key cases/foo.pdf \
         --task pirac --source-type case
@@ -10,32 +12,16 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 
-from melilo.config import SOURCE_BUCKETS, settings
+from melilo.config import SOURCE_BUCKETS
 from melilo.ingest.extract import extract
 from melilo.ingest.r2_client import fetch_source, write_pairs_jsonl
-from melilo.store import bootstrap_schema, upsert_pairs
+from melilo.store import bootstrap_schema, upsert_pairs, validate_license
+from melilo.translate.backends import load_translator
 from melilo.translate.pipeline import translate_document
 
 
 TASKS = ("pirac", "brief", "summary", "section_walkthrough")
 SOURCE_TYPES = ("case", "statute", "bill", "regulation", "declassified")
-
-
-def _load_translator():
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    tok = AutoTokenizer.from_pretrained(settings.translator_model)
-    model = AutoModelForCausalLM.from_pretrained(
-        settings.translator_model, device_map="auto", torch_dtype="auto"
-    )
-
-    def _call(messages: list[dict]) -> str:
-        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tok(prompt, return_tensors="pt").to(model.device)
-        out = model.generate(**inputs, max_new_tokens=2048, do_sample=False)
-        return tok.decode(out[0][inputs["input_ids"].shape[1] :], skip_special_tokens=True).strip()
-
-    return _call
 
 
 def main() -> None:
@@ -62,14 +48,26 @@ def main() -> None:
         default=None,
         help="R2 archive key. Defaults to pairs/<task>/<timestamp>/<bucket>/<source_key>.jsonl",
     )
+    parser.add_argument(
+        "--license",
+        required=True,
+        help="License of the source. PD/CC0/CC-BY-*. See melilo-licensing memory.",
+    )
+    parser.add_argument(
+        "--attribution",
+        default=None,
+        help="Attribution string. REQUIRED when --license starts with CC-BY.",
+    )
+    parser.add_argument("--source-org", default=None, help="Upstream provider/org.")
     args = parser.parse_args()
 
+    validate_license(args.license, args.attribution)
     bootstrap_schema()
 
     doc = fetch_source(bucket_role=args.bucket, key=args.source_key)
     text = extract(doc.key, doc.body)
 
-    translator = _load_translator()
+    translator = load_translator()
     records = list(
         translate_document(
             text=text,
@@ -78,6 +76,9 @@ def main() -> None:
             source_type=args.source_type,
             source_bucket=args.bucket,
             source_key=args.source_key,
+            license=args.license,
+            attribution=args.attribution,
+            source_org=args.source_org,
         )
     )
 
@@ -86,7 +87,6 @@ def main() -> None:
         f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}/"
         f"{args.bucket}/{args.source_key}.jsonl"
     )
-    # R2 first, then Neon. See backfill.py for the rationale.
     write_pairs_jsonl(archive_key, records)
     inserted = upsert_pairs(records)
     print(

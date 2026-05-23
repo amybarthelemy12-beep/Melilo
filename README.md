@@ -44,7 +44,8 @@ Pairs are written to **two** places (belt-and-suspenders):
 - **R2** (Cloudflare object storage) — the immutable JSONL archive. Authoritative
   for replay. One PUT per source document, keyed as
   `pairs/<task>/<run_id>/<bucket>/<source_key>.jsonl` in the bucket named by
-  `R2_MELILO_ENDPOINT`.
+  `R2_MELILO_BUCKET` (default `melilo-pairs`). `R2_MELILO_ENDPOINT` is a
+  reference-only URL field — S3 writes go through `R2_ENDPOINT`.
 - **Neon Postgres** — the query layer. One row per pair in the `pairs` table.
   Authoritative for SFT data loading, civic-frontend lookups, and dedup.
 
@@ -92,41 +93,68 @@ civic readers can reach the canonical document.
 ## Setup
 
 ```bash
-cp .env.example .env  # fill in R2 creds, R2_MELILO_ENDPOINT (bucket), NEON_DATABASE_URL
+cp .env.example .env  # fill in R2 creds, R2_MELILO_BUCKET, NEON_DATABASE_URL
 pip install -e .
 melilo-migrate        # creates the pairs table + indexes in Neon
 ```
 
+### Choosing a translator backend
+
+Set `MELILO_BACKEND` in `.env`:
+
+- `openai` (default) — calls any OpenAI-compatible HTTP API. Works with all of:
+  - **Local Ollama** (no cost, runs on your GPU):
+    ```bash
+    # one-time
+    winget install Ollama.Ollama
+    ollama pull olmo-3:7b-instruct
+    # .env defaults already point here; nothing else to change
+    ```
+  - **Parasail** — set `OPENAI_BASE_URL=https://api.parasail.io/v1`, `OPENAI_API_KEY=<your key>`, `OPENAI_MODEL=<exact Parasail slug>`.
+  - **OpenRouter** — set `OPENAI_BASE_URL=https://openrouter.ai/api/v1`, `OPENAI_API_KEY=<your key>`, `OPENAI_MODEL=allenai/olmo-3-7b-instruct`.
+  - **vLLM server** — point at the vLLM URL.
+
+- `hf` — loads the HF transformers model directly in the Python process. Use this only if you have a GPU and prefer no external service. Slow without batching.
+
+`MELILO_BACKEND_CONCURRENCY` (default 4) controls how many OpenAI-compatible requests are in flight at once. The HF backend always runs sequentially.
+
 ## Backfill flow
+
+Every backfill sweep declares its source's license (per govparti's data-rights
+policy — see `melilo-licensing` memo). Approved licenses: `PD`, `CC0`, `CC-BY-*`.
+NC/SA/ND/aggregator-restricted licenses are dealkillers and rejected.
+
+For `CC-BY-*` sources, `--attribution` is **required** and gets propagated into
+each pair record so downstream renderers can surface it.
 
 ```bash
 # Smoke test: list raw docs from both source buckets
-melilo-ingest --prefix cases/
+melilo-ingest --prefix federal/caselaw/
 
-# One-doc trial run (small task, --limit 1)
-melilo-backfill --prefix cases/ --task summary --source-type case --limit 1
+# One-doc trial run (--limit 1, on local Ollama by default)
+melilo-backfill --prefix federal/caselaw/ --task summary --source-type case \
+    --license PD --source-org CourtListener --limit 1
 
 # Real sweeps (one per task; both source buckets by default)
-melilo-backfill --prefix cases/        --task pirac               --source-type case
-melilo-backfill --prefix cases/        --task brief               --source-type case
-melilo-backfill --prefix cases/        --task summary             --source-type case
-melilo-backfill --prefix statutes/     --task summary             --source-type statute
-melilo-backfill --prefix statutes/     --task section_walkthrough --source-type statute
-melilo-backfill --prefix bills/        --task summary             --source-type bill
-melilo-backfill --prefix bills/        --task section_walkthrough --source-type bill
-melilo-backfill --prefix regulations/  --task summary             --source-type regulation
-melilo-backfill --prefix regulations/  --task section_walkthrough --source-type regulation
-melilo-backfill --prefix declassified/ --task summary             --source-type declassified
-melilo-backfill --prefix declassified/ --task section_walkthrough --source-type declassified
+melilo-backfill --prefix federal/caselaw/ --task pirac --source-type case \
+    --license PD --source-org CourtListener
+melilo-backfill --prefix federal/govinfo/statutes/ --task summary --source-type statute \
+    --license PD --source-org govinfo.gov
+melilo-backfill --prefix federal/federal-register/ --task section_walkthrough --source-type regulation \
+    --license PD --source-org "Federal Register"
+melilo-backfill --prefix states/legiscan/ --task summary --source-type bill \
+    --license CC-BY-4.0 --attribution "LegiScan; data licensed CC BY 4.0" --source-org LegiScan
+melilo-backfill --prefix declassified-bodies/ --task summary --source-type declassified \
+    --license PD --source-org "FOIA / National Security Archive"   # ONLY after PII gate audit
 
 # Then SFT Melilo on accumulated pairs (filtered to the current prompt_version):
 melilo-train --output-dir checkpoints/melilo-v0
 ```
 
 `melilo-backfill` loads the translator model once, sweeps both source buckets
-under the given prefix (override with `--bucket public|internal`), writes
-each pair to R2 then Neon, and **skips docs already processed** for the given
-task (queried from Neon).
+under the given prefix (override with `--bucket public|internal`), writes each
+pair to R2 then Neon, and **skips docs already processed** for the given task
+(queried from Neon).
 
 ## Models
 
@@ -147,20 +175,39 @@ Instruct variant exists in the OLMo 3 line.
   "task_type": "section_walkthrough",
   "source_type": "regulation",
   "source_bucket": "public",
-  "source_key": "regulations/12cfr1005.html",
-  "source_uri": "https://archive.govparti.org/regulations/12cfr1005.html",
+  "source_key": "federal/federal-register/12cfr1005.html",
+  "source_uri": "https://archive.govparti.org/federal/federal-register/12cfr1005.html",
   "section_id": "§ 1005.1",
   "source_text": "§ 1005.1 ... full section text ...",
   "translation": "## § 1005.1\nThis section requires ...",
   "translator_model": "allenai/Olmo-3-7B-Instruct",
   "prompt_version": "v3-pirac-brief-summary-walkthrough",
-  "created_at": "2026-05-22T00:00:00Z"
+  "created_at": "2026-05-22T00:00:00Z",
+  "license": "PD",
+  "attribution": null,
+  "source_org": "Federal Register"
 }
 ```
 
 Neon adds three columns not in the JSONL: `training_set`, `human_reviewed`,
 `review_notes`. These are written after the fact (when a pair is reviewed by a
 human, or consumed by a specific SFT run).
+
+### Licensing policy (`license`, `attribution`)
+
+GovParti's data-rights policy is enforced at the `melilo-backfill` and
+`melilo-translate` entry points (`melilo.store.validate_license`):
+
+- **Allowed:** `PD`, `CC0`, `CC-BY-*`
+- **Rejected:** anything with NC, SA, or ND in the license; aggregator
+  licenses with restrictive terms (SAM.gov, ICPSR, etc.)
+- **CC-BY-* requires `--attribution`** — the run refuses without it
+- **Verify-at-source** — the operator is responsible for confirming the license
+  at the upstream source itself (not internal notes) before each sweep
+- **Indigenous sovereignty + PII gates** are enforced UPSTREAM in the govparti
+  R2 promotion pipeline, not in Melilo
+
+See `melilo-licensing` memo for the full policy including the deny-list.
 
 ## Layout
 

@@ -36,8 +36,12 @@ class Settings(BaseSettings):
     r2_public_base_url: str = Field(
         default="https://archive.govparti.org", alias="R2_PUBLIC_BASE_URL"
     )
-    # Misleadingly named in .env — this is the bucket name where Melilo pairs go.
-    r2_melilo_bucket: str = Field(default="", alias="R2_MELILO_ENDPOINT")
+    # The Melilo bucket where pair JSONL archives are written. The env var
+    # R2_MELILO_ENDPOINT holds a *URL* (custom-domain / public base URL for the
+    # bucket, if any) — it's not used for S3 writes, since writes go through
+    # R2_ENDPOINT + this bucket name.
+    r2_melilo_bucket: str = Field(default="melilo-pairs", alias="R2_MELILO_BUCKET")
+    r2_melilo_base_url: str = Field(default="", alias="R2_MELILO_ENDPOINT")
 
     # --- Models ---------------------------------------------------------------
     translator_model: str = Field(
@@ -56,6 +60,24 @@ class Settings(BaseSettings):
     # Belt-and-suspenders storage: every pair is written to R2 (archive) AND Neon
     # (query layer). SFT reads from Neon; the R2 JSONLs are the immutable backup.
     neon_database_url: str = Field(default="", alias="NEON_DATABASE_URL")
+
+    # --- Translator backend --------------------------------------------------
+    # `hf`       : load the HF transformers model in-process (default; slow on CPU,
+    #              fine on a beefy GPU). Uses TRANSLATOR_MODEL above.
+    # `openai`   : hit any OpenAI-compatible HTTP API. Works with local Ollama,
+    #              Parasail, OpenRouter, vLLM-served endpoints, etc. Swap providers
+    #              by changing OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL.
+    backend: str = Field(default="hf", alias="MELILO_BACKEND")
+    backend_concurrency: int = Field(default=4, alias="MELILO_BACKEND_CONCURRENCY")
+    backend_max_tokens: int = Field(default=2048, alias="MELILO_BACKEND_MAX_TOKENS")
+    backend_temperature: float = Field(default=0.0, alias="MELILO_BACKEND_TEMPERATURE")
+
+    # OpenAI-compatible backend config. Defaults point at a local Ollama instance.
+    openai_base_url: str = Field(
+        default="http://localhost:11434/v1", alias="OPENAI_BASE_URL"
+    )
+    openai_api_key: str = Field(default="ollama", alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="olmo-3:7b-instruct", alias="OPENAI_MODEL")
 
     # --- Helpers --------------------------------------------------------------
     def source_bucket_name(self, role: str) -> str:

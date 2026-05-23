@@ -10,8 +10,11 @@ archive intact and we can reconcile from it. The pair `id` (a content-addressed
 sha256) is the same in both, so reconciliation is a straight idempotent upsert.
 """
 from melilo.store.neon import (  # noqa: F401
+    APPROVED_LICENSES,
     bootstrap_schema,
     iter_pairs,
     list_processed_origins,
     upsert_pair,
+    upsert_pairs,
+    validate_license,
 )

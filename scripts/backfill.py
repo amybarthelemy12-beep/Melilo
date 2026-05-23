@@ -6,24 +6,33 @@ By default the sweep iterates both source buckets (`public` = govparti-archive,
 `internal` = govparti-internal). Pass `--bucket public` or `--bucket internal`
 to restrict.
 
+The translator backend is chosen by `MELILO_BACKEND` in .env (default `hf` for
+in-process HF transformers; set to `openai` for any OpenAI-compatible HTTP API
+like local Ollama, Parasail, OpenRouter, or a vLLM server).
+
+When the backend is HTTP-based (`openai`), requests are submitted concurrently
+via a thread pool of size `MELILO_BACKEND_CONCURRENCY` (default 4). The HF
+backend stays sequential since it's already saturating one GPU.
+
 Write order is R2 first, Neon second: if Neon is briefly down the archive still
 has the work and the next run reconciles. The skip-if-exists check queries Neon
-(faster than listing R2), so a stale Neon DB after an outage will cause some
-re-archiving until reconciliation lands.
+(faster than listing R2).
 
 Per-doc exceptions are caught and logged; one bad PDF does not kill a sweep of
 thousands of documents.
 
 Usage:
-    melilo-backfill --prefix cases/        --task pirac               --source-type case
-    melilo-backfill --prefix statutes/     --task summary             --source-type statute
-    melilo-backfill --prefix bills/        --task section_walkthrough --source-type bill --bucket internal
+    melilo-backfill --prefix federal/caselaw/ --task pirac   --source-type case
+    melilo-backfill --prefix statutes/        --task summary --source-type statute
+    melilo-backfill --prefix bills/           --task section_walkthrough --source-type bill --bucket internal
 """
 from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -34,7 +43,13 @@ from melilo.ingest.r2_client import (
     list_source_keys,
     write_pairs_jsonl,
 )
-from melilo.store import bootstrap_schema, list_processed_origins, upsert_pairs
+from melilo.store import (
+    bootstrap_schema,
+    list_processed_origins,
+    upsert_pairs,
+    validate_license,
+)
+from melilo.translate.backends import load_translator
 from melilo.translate.pipeline import translate_document, validate_task_source
 
 
@@ -42,81 +57,63 @@ TASKS = ("pirac", "brief", "summary", "section_walkthrough")
 SOURCE_TYPES = ("case", "statute", "bill", "regulation", "declassified")
 
 
-def _load_translator():
-    """Load the translator model once. Kept identical to scripts/translate.py's
-    loader so a single-doc run and a backfill run produce byte-identical pairs."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    tok = AutoTokenizer.from_pretrained(settings.translator_model)
-    model = AutoModelForCausalLM.from_pretrained(
-        settings.translator_model, device_map="auto", torch_dtype="auto"
-    )
-
-    def _call(messages: list[dict]) -> str:
-        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tok(prompt, return_tensors="pt").to(model.device)
-        out = model.generate(**inputs, max_new_tokens=2048, do_sample=False)
-        return tok.decode(out[0][inputs["input_ids"].shape[1] :], skip_special_tokens=True).strip()
-
-    return _call
-
-
 def _archive_key(task: str, run_id: str, bucket_role: str, source_key: str) -> str:
-    """R2 archive key, namespaced so the two source buckets never collide."""
     return f"pairs/{task}/{run_id}/{bucket_role}/{source_key}.jsonl"
 
 
-def _sweep_one_bucket(
+def _process_one(
     *,
     bucket_role: str,
-    prefix: str,
+    source_key: str,
     task: str,
     source_type: str,
     run_id: str,
     translator,
+    license: str,
+    attribution: str | None,
+    source_org: str | None,
+) -> tuple[str, str, int, int]:
+    """Returns (bucket_role, source_key, n_records, n_inserted). Raises on failure
+    so the caller can count failures."""
+    doc = fetch_source(bucket_role=bucket_role, key=source_key)
+    text = extract(doc.key, doc.body)
+    records = list(
+        translate_document(
+            text=text,
+            translator=translator,
+            task_type=task,
+            source_type=source_type,
+            source_bucket=bucket_role,
+            source_key=source_key,
+            license=license,
+            attribution=attribution,
+            source_org=source_org,
+        )
+    )
+    # 1. R2 archive (authoritative for replay).
+    write_pairs_jsonl(_archive_key(task, run_id, bucket_role, source_key), records)
+    # 2. Neon insert (authoritative for queries).
+    inserted = upsert_pairs(records)
+    return bucket_role, source_key, len(records), inserted
+
+
+def _iter_targets(
+    buckets: Iterable[str],
+    prefix: str,
     already: set[tuple[str, str]],
-    counters: dict,
     limit: int | None,
-) -> None:
-    print(f"-- sweeping bucket={bucket_role} prefix={prefix!r}", file=sys.stderr)
-    for source_key in list_source_keys(bucket_role=bucket_role, prefix=prefix):
-        if (bucket_role, source_key) in already:
-            counters["skipped"] += 1
-            continue
-        if limit is not None and counters["written"] + counters["failed"] >= limit:
-            return
-        counters["seen"] += 1
-        try:
-            doc = fetch_source(bucket_role=bucket_role, key=source_key)
-            text = extract(doc.key, doc.body)
-            records = list(
-                translate_document(
-                    text=text,
-                    translator=translator,
-                    task_type=task,
-                    source_type=source_type,
-                    source_bucket=bucket_role,
-                    source_key=source_key,
-                )
-            )
-            # 1. R2 archive (authoritative for replay). One PUT per source doc.
-            write_pairs_jsonl(_archive_key(task, run_id, bucket_role, source_key), records)
-            # 2. Neon insert (authoritative for queries). ON CONFLICT DO NOTHING.
-            inserted = upsert_pairs(records)
-            counters["written"] += 1
-            counters["rows_inserted"] += inserted
-            print(
-                f"[{counters['seen']}] {bucket_role}/{source_key} -> "
-                f"{len(records)} pairs ({inserted} new rows)",
-                file=sys.stderr,
-            )
-        except Exception as exc:  # noqa: BLE001 — one bad doc shouldn't kill the sweep
-            counters["failed"] += 1
-            print(
-                f"[{counters['seen']}] FAILED {bucket_role}/{source_key}: {exc}",
-                file=sys.stderr,
-            )
-            traceback.print_exc(file=sys.stderr)
+):
+    """Yield (bucket_role, source_key) tuples to process, applying skip + limit."""
+    seen = 0
+    for bucket_role in buckets:
+        for source_key in list_source_keys(bucket_role=bucket_role, prefix=prefix):
+            if (bucket_role, source_key) in already:
+                yield ("SKIP", bucket_role, source_key)
+                continue
+            if limit is not None and seen >= limit:
+                return
+            seen += 1
+            yield ("DO", bucket_role, source_key)
 
 
 def main() -> None:
@@ -141,14 +138,56 @@ def main() -> None:
         default=None,
         help="Stop after this many docs are processed (skipped docs don't count).",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        help=(
+            "Override MELILO_BACKEND_CONCURRENCY for this run. Ignored for the HF "
+            "backend (always 1)."
+        ),
+    )
+    parser.add_argument(
+        "--license",
+        required=True,
+        help=(
+            "License of the source corpus for this sweep. Must be one of: PD, CC0, "
+            "CC-BY-4.0 (or other CC-BY-*). Per govparti policy, NC/SA/ND licenses "
+            "are dealkillers and rejected. Verify-at-source before running."
+        ),
+    )
+    parser.add_argument(
+        "--attribution",
+        default=None,
+        help=(
+            "Attribution string. REQUIRED when --license starts with CC-BY. Example: "
+            "\"LegiScan; data licensed CC BY 4.0\". Surfaced wherever pair renders."
+        ),
+    )
+    parser.add_argument(
+        "--source-org",
+        default=None,
+        help=(
+            "Upstream provider/organization, e.g. LegiScan, Congress.gov, "
+            "CourtListener. Stored on each pair for provenance and filtering."
+        ),
+    )
     args = parser.parse_args()
 
     validate_task_source(args.task, args.source_type)
+    validate_license(args.license, args.attribution)
 
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    buckets_to_sweep: Iterable[str] = (
+    buckets: tuple[str, ...] = (
         SOURCE_BUCKETS if args.bucket == "both" else (args.bucket,)
     )
+
+    # The HF backend is GPU-bound and runs sequentially. HTTP backends can fan out.
+    backend = settings.backend.lower().strip()
+    if backend == "hf":
+        concurrency = 1
+    else:
+        concurrency = args.concurrency or settings.backend_concurrency
 
     print("ensuring Neon schema is bootstrapped ...", file=sys.stderr)
     bootstrap_schema()
@@ -157,22 +196,66 @@ def main() -> None:
     already = list_processed_origins(task_type=args.task)
     print(f"  found {len(already)} already-processed (bucket, key) pairs", file=sys.stderr)
 
-    print(f"loading translator: {settings.translator_model}", file=sys.stderr)
-    translator = _load_translator()
+    print(
+        f"loading translator: backend={backend} "
+        f"({'in-process HF' if backend == 'hf' else settings.openai_base_url})",
+        file=sys.stderr,
+    )
+    translator = load_translator()
 
     counters = {"seen": 0, "written": 0, "skipped": 0, "failed": 0, "rows_inserted": 0}
-    for bucket_role in buckets_to_sweep:
-        _sweep_one_bucket(
-            bucket_role=bucket_role,
-            prefix=args.prefix,
-            task=args.task,
-            source_type=args.source_type,
-            run_id=run_id,
-            translator=translator,
-            already=already,
-            counters=counters,
-            limit=args.limit,
-        )
+    counters_lock = threading.Lock()
+
+    def _bump(key: str, by: int = 1) -> None:
+        with counters_lock:
+            counters[key] += by
+
+    def _submit_one(bucket_role: str, source_key: str):
+        try:
+            br, sk, n_records, inserted = _process_one(
+                bucket_role=bucket_role,
+                source_key=source_key,
+                task=args.task,
+                source_type=args.source_type,
+                run_id=run_id,
+                translator=translator,
+                license=args.license,
+                attribution=args.attribution,
+                source_org=args.source_org,
+            )
+            _bump("written")
+            _bump("rows_inserted", inserted)
+            print(
+                f"OK   {br}/{sk} -> {n_records} pairs ({inserted} new rows)",
+                file=sys.stderr,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _bump("failed")
+            print(f"FAIL {bucket_role}/{source_key}: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+
+    targets = _iter_targets(buckets, args.prefix, already, args.limit)
+
+    if concurrency == 1:
+        for kind, bucket_role, source_key in targets:
+            if kind == "SKIP":
+                _bump("skipped")
+                continue
+            _bump("seen")
+            _submit_one(bucket_role, source_key)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = []
+            for kind, bucket_role, source_key in targets:
+                if kind == "SKIP":
+                    _bump("skipped")
+                    continue
+                _bump("seen")
+                futures.append(pool.submit(_submit_one, bucket_role, source_key))
+            # Drain to surface any uncaught exceptions (defense in depth — _submit_one
+            # is already try/except'd).
+            for fut in as_completed(futures):
+                fut.result()
 
     print(
         "done: "
