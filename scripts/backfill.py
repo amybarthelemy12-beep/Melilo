@@ -29,12 +29,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import sys
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Iterable
+
+
+# Default skip patterns — sidecar metadata files that show up alongside the
+# real content in govparti's R2 layout. Feeding these to OLMo wastes tokens.
+DEFAULT_EXCLUDE_GLOBS = ("*.meta.json", "*.metadata.json", "*.sidecar.json")
 
 from melilo.config import SOURCE_BUCKETS, settings
 from melilo.ingest.extract import extract
@@ -97,16 +103,24 @@ def _process_one(
     return bucket_role, source_key, len(records), inserted
 
 
+def _matches_any_glob(key: str, globs: Iterable[str]) -> bool:
+    return any(fnmatch.fnmatch(key, g) for g in globs)
+
+
 def _iter_targets(
     buckets: Iterable[str],
     prefix: str,
     already: set[tuple[str, str]],
     limit: int | None,
+    exclude_globs: tuple[str, ...],
 ):
-    """Yield (bucket_role, source_key) tuples to process, applying skip + limit."""
+    """Yield (bucket_role, source_key) tuples to process, applying exclude + skip + limit."""
     seen = 0
     for bucket_role in buckets:
         for source_key in list_source_keys(bucket_role=bucket_role, prefix=prefix):
+            if _matches_any_glob(source_key, exclude_globs):
+                yield ("EXCLUDE", bucket_role, source_key)
+                continue
             if (bucket_role, source_key) in already:
                 yield ("SKIP", bucket_role, source_key)
                 continue
@@ -172,7 +186,19 @@ def main() -> None:
             "CourtListener. Stored on each pair for provenance and filtering."
         ),
     )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help=(
+            "Glob pattern to skip (e.g. '*.meta.json'). Repeat for multiple. "
+            f"Defaults to {DEFAULT_EXCLUDE_GLOBS!r} which skip govparti sidecar metadata."
+        ),
+    )
     args = parser.parse_args()
+    exclude_globs: tuple[str, ...] = (
+        tuple(args.exclude) if args.exclude else DEFAULT_EXCLUDE_GLOBS
+    )
 
     validate_task_source(args.task, args.source_type)
     validate_license(args.license, args.attribution)
@@ -203,7 +229,14 @@ def main() -> None:
     )
     translator = load_translator()
 
-    counters = {"seen": 0, "written": 0, "skipped": 0, "failed": 0, "rows_inserted": 0}
+    counters = {
+        "seen": 0,
+        "written": 0,
+        "skipped": 0,
+        "excluded": 0,
+        "failed": 0,
+        "rows_inserted": 0,
+    }
     counters_lock = threading.Lock()
 
     def _bump(key: str, by: int = 1) -> None:
@@ -234,10 +267,13 @@ def main() -> None:
             print(f"FAIL {bucket_role}/{source_key}: {exc}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
 
-    targets = _iter_targets(buckets, args.prefix, already, args.limit)
+    targets = _iter_targets(buckets, args.prefix, already, args.limit, exclude_globs)
 
     if concurrency == 1:
         for kind, bucket_role, source_key in targets:
+            if kind == "EXCLUDE":
+                _bump("excluded")
+                continue
             if kind == "SKIP":
                 _bump("skipped")
                 continue
@@ -247,6 +283,9 @@ def main() -> None:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = []
             for kind, bucket_role, source_key in targets:
+                if kind == "EXCLUDE":
+                    _bump("excluded")
+                    continue
                 if kind == "SKIP":
                     _bump("skipped")
                     continue
@@ -260,8 +299,8 @@ def main() -> None:
     print(
         "done: "
         f"seen={counters['seen']} written={counters['written']} "
-        f"skipped={counters['skipped']} failed={counters['failed']} "
-        f"new_rows={counters['rows_inserted']}",
+        f"skipped={counters['skipped']} excluded={counters['excluded']} "
+        f"failed={counters['failed']} new_rows={counters['rows_inserted']}",
         file=sys.stderr,
     )
 

@@ -51,7 +51,7 @@ class Settings(BaseSettings):
         default="allenai/OLMo-2-0425-1B-SFT", alias="STUDENT_MODEL"
     )
     prompt_version: str = Field(
-        default="v3-pirac-brief-summary-walkthrough", alias="PROMPT_VERSION"
+        default="v4-plain-english-grade-5", alias="PROMPT_VERSION"
     )
 
     hf_token: str = Field(default="", alias="HF_TOKEN")

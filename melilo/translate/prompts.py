@@ -43,8 +43,15 @@ BASE_SYSTEM = (
     "4. Preserve every citation, section number, defined term, and redaction marker "
     "(for example `[REDACTED]`, `█████`) exactly as written in the source. Do not "
     "invent citations.\n"
-    "5. Use short sentences and everyday words. When a legal term has no plain "
-    "equivalent, restate it plainly and keep the original term in parentheses."
+    "5. Write your own prose at a fifth-grade reading level (target Flesch-Kincaid "
+    "grade 5). Use short sentences — aim for under fifteen words. Use everyday words. "
+    "Prefer concrete subjects and active verbs ('the court ruled' not 'it was ruled "
+    "by the court'). Avoid Latin and legal jargon where a plain word does the job. "
+    "When a legal term has no plain equivalent and must appear in your explanation, "
+    "restate it plainly and keep the original term in parentheses — for example, "
+    "'cancels the lower court's order (vacates)'. Direct quotations of statutory "
+    "text, holdings, citations, and section headings stay verbatim; those are the "
+    "source, not your prose, and the reading-level rule does not apply to them."
 )
 
 
