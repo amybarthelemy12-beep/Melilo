@@ -1,4 +1,15 @@
-"""R2 (S3-compatible) client wrappers for source docs and pair storage."""
+"""R2 (S3-compatible) client wrappers.
+
+Three buckets are addressable through this module:
+
+- `source_bucket_role="public"`   -> reads from `settings.r2_public_bucket`
+- `source_bucket_role="internal"` -> reads from `settings.r2_internal_bucket`
+- pair writes always target `settings.r2_melilo_bucket`
+
+Callers pass the logical role (`public`/`internal`); the bucket-name lookup
+lives in `settings.source_bucket_name` so we have one place to change if the
+R2 layout shifts.
+"""
 from __future__ import annotations
 
 import json
@@ -26,29 +37,49 @@ def _client():
 class SourceDoc:
     key: str
     body: bytes
+    bucket_role: str  # "public" | "internal" — propagated into pair records
 
 
-def list_source_keys(prefix: str = "") -> Iterator[str]:
+def list_source_keys(bucket_role: str, prefix: str = "") -> Iterator[str]:
+    """Yield keys under `prefix` in the given source bucket (public or internal)."""
+    bucket = settings.source_bucket_name(bucket_role)
     s3 = _client()
     paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=settings.r2_source_bucket, Prefix=prefix):
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             yield obj["Key"]
 
 
-def fetch_source(key: str) -> SourceDoc:
+def fetch_source(bucket_role: str, key: str) -> SourceDoc:
+    bucket = settings.source_bucket_name(bucket_role)
     s3 = _client()
-    obj = s3.get_object(Bucket=settings.r2_source_bucket, Key=key)
-    return SourceDoc(key=key, body=obj["Body"].read())
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    return SourceDoc(key=key, body=obj["Body"].read(), bucket_role=bucket_role)
 
 
 def write_pairs_jsonl(key: str, records: Iterable[dict]) -> None:
-    """Append-style write of JSONL pair records to the pairs bucket."""
+    """Write JSONL pair records to the Melilo bucket. One PUT per call."""
+    if not settings.r2_melilo_bucket:
+        raise RuntimeError(
+            "R2_MELILO_ENDPOINT is not set in .env — set it to the bucket name "
+            "where Melilo pairs should be written."
+        )
     s3 = _client()
     body = "\n".join(json.dumps(r, ensure_ascii=False) for r in records).encode("utf-8")
     s3.put_object(
-        Bucket=settings.r2_pairs_bucket,
+        Bucket=settings.r2_melilo_bucket,
         Key=key,
         Body=body,
         ContentType="application/x-ndjson",
     )
+
+
+def list_pair_keys(prefix: str = "") -> Iterator[str]:
+    """List keys in the Melilo (pairs) bucket. Used by backfill for skip-if-exists."""
+    if not settings.r2_melilo_bucket:
+        raise RuntimeError("R2_MELILO_ENDPOINT is not set in .env")
+    s3 = _client()
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=settings.r2_melilo_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            yield obj["Key"]

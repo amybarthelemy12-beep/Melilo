@@ -14,7 +14,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
-    "transformers>=4.46",
+    "psycopg[binary]>=3.2", # Neon (Postgres) for pair query layer
+    "transformers>=4.57",   # Olmo-3-7B-Instruct needs >=4.57; OLMo-2 needs >=4.48
     "torch>=2.3",
     "accelerate>=0.34",
     "datasets>=2.20",
@@ -35,8 +36,10 @@ dev = [
 ]
 
 [project.scripts]
+melilo-migrate = "scripts.migrate:main"
 melilo-ingest = "scripts.ingest:main"
 melilo-translate = "scripts.translate:main"
+melilo-backfill = "scripts.backfill:main"
 melilo-train = "scripts.train:main"
 
 [tool.setuptools.packages.find]
