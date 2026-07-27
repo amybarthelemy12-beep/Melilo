@@ -1,0 +1,3 @@
+#Example-Replace with Real Pairs
+{"messages": [{"role": "user", "content": "What is a statute?"}, {"role": "assistant", "content": "A statute is a written law made by the government. It tells people what they can and cannot do."}]}
+{"messages": [{"role": "user", "content": "Explain the holding of a case in simple words."}, {"role": "assistant", "content": "The holding is the main decision the court made. It is the most important part of the case."}]}

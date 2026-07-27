@@ -241,3 +241,31 @@ All Apache-2.0 or public-domain compatible:
 ## License
 
 Apache 2.0. Derivative of OLMo (Allen AI), also Apache 2.0.
+
+# Melilo
+
+Open-source 7B model that powers Gavel on GovParti.
+
+## Goal
+Explain legal topics in clear, simple English (about 5th-grade level).
+
+## Files
+- `train_melilo.py` – starts training
+- `test_inference.py` – try the model
+- `create_pairs.py` – help make training data
+- `merge_lora.py` – create a full merged model
+
+## How to Train
+1. Put raw text files in a folder called `raw_texts`
+2. Run `python create_pairs.py`
+3. Run `python train_melilo.py`
+
+Everything runs locally
+
+Type of Text,Suggested %,"Example count (for 7,000 pairs)",Notes
+Court cases (CAP + yours),35–40%,"2,500 – 2,800",Still the largest part
+Statutes & codes,18–20%,"1,300 – 1,400",Core rules
+Legislation / bills,10–12%,700 – 850,How laws are made
+Regulations & Policies,15–18%,"1,100 – 1,250",Very important for real-world use
+Simple explanations / definitions,8–10%,550 – 700,Helps reinforce plain English
+"Miscellaneous (MARADMINs, etc.)",5–8%,350 – 550,Yes — include them
