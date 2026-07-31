@@ -5,7 +5,7 @@ from transformers import TrainingArguments
 from datasets import load_dataset
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "allenai/OLMo-2-1124-7B-Instruct",
+    model_name = "allenai/OLMo-2-1124-7B-Instruct",   # 7B base
     max_seq_length = 4096,
     dtype = None,
     load_in_4bit = True,
@@ -13,7 +13,7 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r = 32,
+    r = 32,                    # good starting rank for legal text
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                       "gate_proj", "up_proj", "down_proj"],
     lora_alpha = 32,
@@ -53,4 +53,4 @@ trainer = SFTTrainer(
 trainer.train()
 model.save_pretrained("melilo-7b-qlora")
 tokenizer.save_pretrained("melilo-7b-qlora")
-print("Training finished!")
+print("Training finished! Model saved to melilo-7b-qlora/")
