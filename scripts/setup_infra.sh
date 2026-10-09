@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INFRA_DIR="$ROOT_DIR/infra"
-ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
+export ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export INFRA_DIR="$ROOT_DIR/infra"
+export ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
 
 if ! command -v terraform >/dev/null 2>&1; then
   echo "[setup_infra] Terraform is not installed or not on PATH." >&2
@@ -48,10 +48,6 @@ from pathlib import Path
 root = Path(os.environ["ROOT_DIR"])
 env_file = Path(os.environ["ENV_FILE"])
 
-if not env_file.exists():
-    env_file.write_text("")
-
-# Ensure keys that are expected by terraform and local scripts are present.
 required = {
     "CLOUDFLARE_API_TOKEN": os.environ.get("CLOUDFLARE_API_TOKEN", ""),
     "TF_VAR_cloudflare_account_id": os.environ.get("TF_VAR_cloudflare_account_id", ""),
@@ -66,15 +62,15 @@ required = {
 
 existing = {}
 if env_file.exists():
-    for line in env_file.read_text().splitlines():
+    for line in env_file.read_text(encoding="utf-8").splitlines():
         if "=" in line and not line.strip().startswith("#"):
-            k, v = line.split("=", 1)
-            existing[k.strip()] = v.strip()
+            key, value = line.split("=", 1)
+            existing[key.strip()] = value.strip()
 
 for key, value in required.items():
     if value and key not in existing:
         with env_file.open("a", encoding="utf-8") as fh:
-            if env_file.read_text(encoding="utf-8") and not env_file.read_text(encoding="utf-8").endswith("\n"):
+            if env_file.exists() and env_file.stat().st_size > 0 and not env_file.read_text(encoding="utf-8").endswith("\n"):
                 fh.write("\n")
             fh.write(f"{key}={value}\n")
 PY
@@ -100,6 +96,8 @@ from pathlib import Path
 env_file = Path(sys.argv[1])
 out_file = Path(sys.argv[2])
 
+current = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+
 if out_file.exists():
     payload = json.loads(out_file.read_text(encoding="utf-8"))
     if "source_bucket_name" in payload:
@@ -116,24 +114,18 @@ if out_file.exists():
             f"TF_VAR_source_bucket_name={source}",
             f"TF_VAR_pairs_bucket_name={pairs}",
         ]
-        current = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+        lines = current.splitlines()
         for item in env_lines:
             key, value = item.split("=", 1)
-            if f"{key}=" in current:
-                new_lines = []
-                updated = False
-                for line in current.splitlines():
-                    if line.startswith(f"{key}="):
-                        new_lines.append(f"{key}={value}")
-                        updated = True
-                    else:
-                        new_lines.append(line)
-                if updated:
-                    current = "\n".join(new_lines) + "\n"
-                    continue
-            if key not in current:
-                current += f"{key}={value}\n"
-        env_file.write_text(current, encoding="utf-8")
+            replace = False
+            for idx, line in enumerate(lines):
+                if line.startswith(f"{key}="):
+                    lines[idx] = f"{key}={value}"
+                    replace = True
+                    break
+            if not replace:
+                lines.append(f"{key}={value}")
+        env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
 if [[ -n "${NEON_DATABASE_URL:-}" ]]; then
