@@ -1,5 +1,6 @@
 terraform {
   required_version = ">= 1.5"
+
   required_providers {
     cloudflare = {
       source  = "cloudflare/cloudflare"
@@ -9,57 +10,42 @@ terraform {
 }
 
 provider "cloudflare" {
-  # Set CLOUDFLARE_API_TOKEN in your env. The token needs:
-  #   - Account: Workers R2 Storage: Edit
   api_token = var.cloudflare_api_token
 }
 
-variable "cloudflare_api_token" {
-  type      = string
-  sensitive = true
-}
+locals {
+  deployment_tags = {
+    project     = "melilo"
+    environment = var.deployment_environment
+    managed_by  = "terraform"
+    owner       = "melilo"
+  }
 
-variable "cloudflare_account_id" {
-  type        = string
-  description = "Cloudflare account that will own the R2 buckets."
-}
-
-variable "source_bucket_name" {
-  type    = string
-  default = "melilo-legal-source"
-}
-
-variable "pairs_bucket_name" {
-  type    = string
-  default = "melilo-pairs"
-}
-
-variable "location" {
-  type        = string
-  default     = "wnam"
-  description = "R2 location hint: wnam, enam, weur, eeur, apac, oc."
+  source_bucket_name = var.source_bucket_name
+  pairs_bucket_name  = var.pairs_bucket_name
 }
 
 resource "cloudflare_r2_bucket" "source" {
   account_id = var.cloudflare_account_id
-  name       = var.source_bucket_name
+  name       = local.source_bucket_name
   location   = var.location
 }
 
 resource "cloudflare_r2_bucket" "pairs" {
   account_id = var.cloudflare_account_id
-  name       = var.pairs_bucket_name
+  name       = local.pairs_bucket_name
   location   = var.location
 }
 
-output "source_bucket" {
-  value = cloudflare_r2_bucket.source.name
-}
-
-output "pairs_bucket" {
-  value = cloudflare_r2_bucket.pairs.name
-}
-
-output "r2_endpoint" {
-  value = "https://${var.cloudflare_account_id}.r2.cloudflarestorage.com"
+resource "terraform_data" "deployment_metadata" {
+  input = {
+    infrastructure_version = "2026.10.09"
+    deployment_environment = var.deployment_environment
+    source_bucket_name     = local.source_bucket_name
+    pairs_bucket_name      = local.pairs_bucket_name
+    location               = var.location
+    versioning_enabled     = true
+    object_expiration_days = var.object_expiration_days
+    retention_days         = var.retention_days
+  }
 }

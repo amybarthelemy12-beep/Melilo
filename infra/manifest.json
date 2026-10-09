@@ -1,0 +1,11 @@
+{
+  "infrastructure_version": "2026.10.09",
+  "deployment_environment": "dev",
+  "source_bucket_name": "melilo-legal-source-dev",
+  "pairs_bucket_name": "melilo-pairs-dev",
+  "location": "wnam",
+  "versioning_enabled": true,
+  "retention_days": 90,
+  "object_expiration_days": 365,
+  "generated_by": "scripts/setup_infra.sh"
+}

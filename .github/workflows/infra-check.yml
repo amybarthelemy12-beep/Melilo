@@ -1,0 +1,65 @@
+name: melilo-infra-check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  infra-check:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: test-token
+      TF_VAR_cloudflare_account_id: test-account
+      TF_VAR_deployment_environment: dev
+      TF_VAR_source_bucket_name: melilo-legal-source-dev
+      TF_VAR_pairs_bucket_name: melilo-pairs-dev
+      R2_ACCESS_KEY_ID: test-access-key
+      R2_SECRET_ACCESS_KEY: test-secret-key
+      R2_ENDPOINT: https://example.r2.cloudflarestorage.com
+      R2_PUBLIC_BUCKET: govparti-archive
+      R2_INTERNAL_BUCKET: govparti-internal
+      R2_MELILO_BUCKET: melilo-pairs-dev
+      R2_MELILO_ENDPOINT: https://example.r2.cloudflarestorage.com/melilo-pairs-dev
+      NEON_DATABASE_URL: postgresql://user:password@ep.example.us-east-1.aws.neon.tech/neondb?sslmode=require
+      MELILO_BACKEND: openai
+      OPENAI_BASE_URL: http://localhost:11434/v1
+      OPENAI_API_KEY: ollama
+      OPENAI_MODEL: olmo-3:7b-instruct
+      TRANSLATOR_MODEL: allenai/OLMo-3-7B-Instruct
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate environment
+        run: |
+          python scripts/validate_env.py --env-file .env.example --strict || true
+          python scripts/validate_env.py --env-file .env.example
+
+      - name: Terraform init
+        run: terraform -chdir=infra init -backend=false
+
+      - name: Terraform validate
+        run: terraform -chdir=infra validate
+
+      - name: Smoke tests
+        run: |
+          python -m compileall scripts melilo
+          python scripts/infra_status.py --json || true
