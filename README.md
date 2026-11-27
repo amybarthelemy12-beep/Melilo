@@ -90,6 +90,10 @@ civic readers can reach the canonical document.
                                                   +-----------------------+
 ```
 
+## Local comparison demo
+
+[Run the tire-dumping comparison on Windows](examples/local-dumping/README.md) using two public county records and Ollama. No database, credentials, or training required.
+
 ## Setup
 
 ```bash

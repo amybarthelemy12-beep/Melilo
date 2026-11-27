@@ -1,0 +1,19 @@
+Question: We have a problem with illegally dumped tires. What happened when other communities offered free tire disposal?
+
+Use only the evidence below. In plain English:
+1. For each county, say what it tried and what it measured. Keep dates, quantities, and units attached to the correct county.
+2. Compare what the two cases show. Give one practical benefit and one limitation supported by the records.
+3. Say whether these records show that either program reduced illegal dumping. Separate public drop-off, roadway cleanup, and dumping incidence. Do not infer causation, convert tires to tons, or rank the programs.
+4. Cite [LA-2024], [PIN-2026], or [PIN-EVENT] next to each factual claim. Include the URLs at the end. Do not invent sources.
+
+Evidence (original summaries of published facts; not ordinance text):
+
+[LA-2024] Los Angeles County, California. The annual report for unincorporated Los Angeles County describes nine free tire collection events in 2024. The public brought in 410 tons of scrap tires at those events. Separately, county road crews recovered 167 tons of illegally dumped tires from public rights-of-way. The tire section reports material collected, not a before-and-after count of dumping incidents or a comparison with areas without events.
+Source: 2024 Los Angeles-Unincorporated Electronic Annual Report, section 4020-SP-TRS, page 56.
+https://pw.lacounty.gov/epd/swims/ShowDoc.aspx?hp=yes&id=18172&type=PDF#page=56
+
+[PIN-2026] Pinellas County, Florida. At its April 18, 2026 free tire collection event, the county reported taking in 861 used tires. The article also reports 1,082 tires collected at a separate 2025 event. These are collection counts, not changes in dumping incidents.
+https://pinellas.gov/story/pinellas-county-collects-861-used-tires-during-free-collection-event/
+
+[PIN-EVENT] The 2026 Pinellas event notice listed three drop-off locations and a limit of 12 rimless tires per resident, with a 36-inch maximum diameter. These are participation rules, not survey findings about access or attendance.
+https://pinellas.gov/event/free-countywide-tire-disposal-event/
